@@ -8,8 +8,9 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"simple-ledger.itmo.ru/internal/data"
 	"time"
+
+	"simple-ledger.itmo.ru/internal/data"
 
 	_ "github.com/lib/pq"
 )
@@ -25,6 +26,7 @@ type application struct {
 	config config
 	logger *log.Logger
 	models data.Models
+	db     *sql.DB
 }
 
 func main() {
@@ -46,6 +48,7 @@ func main() {
 		config: cfg,
 		logger: logger,
 		models: data.NewModels(db),
+		db:     db,
 	}
 
 	srv := &http.Server{
@@ -62,11 +65,14 @@ func main() {
 }
 
 func openDB(cfg config) (*sql.DB, error) {
-	db, err := sql.Open("postgres", cfg.db.dsn)
-	if err != nil {
-		return nil, err
+	// Добавьте отладочный вывод для проверки DSN
+	fmt.Printf("Using DSN: %s\n", cfg.db.dsn)
+
+	if cfg.db.dsn == "" {
+		return nil, fmt.Errorf("DB_DSN is empty")
 	}
 
+	db, err := sql.Open("postgres", cfg.db.dsn)
 	if err != nil {
 		return nil, err
 	}
