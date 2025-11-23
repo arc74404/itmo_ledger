@@ -79,3 +79,27 @@ func (m BalanceModel) Update(balance *Balance) error {
 	}
 	return nil
 }
+
+// GetOrCreate получает баланс пользователя или создает новый, если его нет
+func (m BalanceModel) GetOrCreate(id uuid.UUID) (*Balance, error) {
+	balance, err := m.Get(id)
+	if err == nil {
+		return balance, nil
+	}
+
+	if !errors.Is(err, ErrRecordNotFound) {
+		return nil, err
+	}
+
+	// Создаем новый баланс
+	newBalance := &Balance{
+		Id:     id,
+		Amount: 0,
+	}
+	err = m.Insert(newBalance)
+	if err != nil {
+		return nil, err
+	}
+
+	return newBalance, nil
+}

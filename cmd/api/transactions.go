@@ -1,18 +1,28 @@
 package main
 
 import (
+	"context"
+	"database/sql"
 	"errors"
 	"net/http"
 
 	"github.com/google/uuid"
 	"simple-ledger.itmo.ru/internal/data"
 	"simple-ledger.itmo.ru/internal/validator"
+	"time"
 )
 
 type transactionIn struct {
-	UserId string `json:"user_id"`
-	Amount int    `json:"amount"`
-	Type   string `json:"type"`
+	UserId      string `json:"user_id"`
+	Amount      int    `json:"amount"`
+	Type        string `json:"type"`
+	LifetimeDays *int  `json:"lifetime_days,omitempty"` // Опционально, по умолчанию 30 дней
+}
+
+type balanceResponse struct {
+	UserId      uuid.UUID              `json:"user_id"`
+	Balance     int                    `json:"balance"`
+	Expiring    map[string]int         `json:"expiring"` // Баллы, которые сгорят по датам
 }
 
 func (app *application) createTransactionHandler(w http.ResponseWriter, r *http.Request) {
@@ -23,75 +33,134 @@ func (app *application) createTransactionHandler(w http.ResponseWriter, r *http.
 		return
 	}
 
-	id, err := uuid.Parse(trxIn.UserId)
+	userId, err := uuid.Parse(trxIn.UserId)
 
 	v := validator.New()
 	v.Check(err == nil, "user_id", "must be uuid")
 	v.Check(trxIn.Amount > 0, "amount", "must be positive")
 	v.Check(validator.IsPermitted(trxIn.Type, "deposit", "withdrawal"), "type", "must be deposit or withdrawal")
+	
+	// Проверка lifetime_days, если указан
+	if trxIn.LifetimeDays != nil {
+		v.Check(*trxIn.LifetimeDays > 0, "lifetime_days", "must be positive")
+	}
 
 	if !v.Valid() {
 		app.failedValidationResponse(w, r, v.Errors)
 		return
 	}
 
-	balance, err := app.models.Balances.Get(id)
+	// Устанавливаем дефолтное значение lifetime_days = 30, если не указано
+	lifetimeDays := 30
+	if trxIn.LifetimeDays != nil {
+		lifetimeDays = *trxIn.LifetimeDays
+	}
+
+	// Начинаем транзакцию
+	tx, err := app.db.Begin()
 	if err != nil {
-		switch {
-		case errors.Is(err, data.ErrRecordNotFound):
-			app.createNewBalance(w, r, &data.Balance{
-				Id:     id,
-				Amount: trxIn.Amount,
-			})
-		default:
-			app.serverErrorResponse(w, r, err)
-		}
+		app.serverErrorResponse(w, r, err)
+		return
+	}
+	defer tx.Rollback()
+
+	// Убеждаемся, что пользователь существует в таблице balances
+	_, err = app.models.Balances.GetOrCreate(userId)
+	if err != nil {
+		app.serverErrorResponse(w, r, err)
 		return
 	}
 
-	app.updateBalance(w, r, balance, trxIn)
-}
-
-func (app *application) createNewBalance(w http.ResponseWriter, r *http.Request, balance *data.Balance) {
-	err := app.models.Balances.Insert(balance)
-	if err != nil {
-		app.serverErrorResponse(w, r, err)
-	}
-	err = app.writeJSON(w, http.StatusCreated, balance, nil)
-	if err != nil {
-		app.serverErrorResponse(w, r, err)
-	}
-}
-
-func (app *application) updateBalance(w http.ResponseWriter, r *http.Request, balance *data.Balance, trxId transactionIn) {
-	if trxId.Type == "withdrawal" && balance.Amount < trxId.Amount {
-		app.badRequestResponse(w, r, errors.New("insufficient funds"))
-		return
-	}
-
-	if trxId.Type == "deposit" {
-		balance.Amount += trxId.Amount
+	if trxIn.Type == "deposit" {
+		err = app.handleDeposit(tx, userId, trxIn.Amount, lifetimeDays)
 	} else {
-		balance.Amount -= trxId.Amount
+		err = app.handleWithdrawal(tx, userId, trxIn.Amount)
 	}
-	err := app.models.Balances.Update(balance)
+
+	if err != nil {
+		if errors.Is(err, data.ErrInsufficientFunds) {
+			app.badRequestResponse(w, r, err)
+			return
+		}
+		app.serverErrorResponse(w, r, err)
+		return
+	}
+
+	// Коммитим транзакцию
+	if err = tx.Commit(); err != nil {
+		app.serverErrorResponse(w, r, err)
+		return
+	}
+
+	// Получаем обновленный баланс для ответа
+	balance, err := app.models.BonusEntries.GetTotalBalance(userId)
 	if err != nil {
 		app.serverErrorResponse(w, r, err)
+		return
 	}
-	err = app.writeJSON(w, http.StatusOK, balance, nil)
-	if err != nil {
+
+	response := map[string]interface{}{
+		"user_id": userId,
+		"amount":  trxIn.Amount,
+		"type":    trxIn.Type,
+		"balance": balance,
+	}
+
+	if err = app.writeJSON(w, http.StatusOK, response, nil); err != nil {
 		app.serverErrorResponse(w, r, err)
 	}
+}
+
+func (app *application) handleDeposit(tx *sql.Tx, userId uuid.UUID, amount int, lifetimeDays int) error {
+	// Создаем новую запись о начислении баллов
+	now := time.Now()
+	entry := &data.BonusEntry{
+		Id:          uuid.New(),
+		UserId:      userId,
+		Amount:      amount,
+		CreatedAt:   now,
+		ExpiresAt:   now.AddDate(0, 0, lifetimeDays),
+		LifetimeDays: lifetimeDays,
+		Status:      data.BonusEntryStatusActive,
+	}
+
+	// Используем транзакцию для вставки
+	query := `
+		INSERT INTO bonus_entries (id, user_id, amount, created_at, expires_at, lifetime_days, status)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		RETURNING id, created_at, expires_at`
+	
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	err := tx.QueryRowContext(ctx, query,
+		entry.Id,
+		entry.UserId,
+		entry.Amount,
+		entry.CreatedAt,
+		entry.ExpiresAt,
+		entry.LifetimeDays,
+		entry.Status,
+	).Scan(&entry.Id, &entry.CreatedAt, &entry.ExpiresAt)
+	
+	return err
+}
+
+func (app *application) handleWithdrawal(tx *sql.Tx, userId uuid.UUID, amount int) error {
+	// Используем метод модели для списания с блокировками
+	_, err := app.models.BonusEntries.SpendEntries(tx, userId, amount)
+	return err
 }
 
 func (app *application) showUserBalanceHandler(w http.ResponseWriter, r *http.Request) {
-	id, err := app.readIDParam(r)
-	if err != nil || id == uuid.Nil {
+	userId, err := app.readIDParam(r)
+	if err != nil || userId == uuid.Nil {
 		app.notFoundResponse(w, r)
 		return
 	}
 
-	balance, err := app.models.Balances.Get(id)
+	// Проверяем, существует ли пользователь
+	_, err = app.models.Balances.Get(userId)
 	if err != nil {
 		switch {
 		case errors.Is(err, data.ErrRecordNotFound):
@@ -102,7 +171,27 @@ func (app *application) showUserBalanceHandler(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	if err = app.writeJSON(w, http.StatusOK, balance, nil); err != nil {
+	// Получаем общий баланс
+	balance, err := app.models.BonusEntries.GetTotalBalance(userId)
+	if err != nil {
+		app.serverErrorResponse(w, r, err)
+		return
+	}
+
+	// Получаем информацию о сгорании баллов (на ближайшие 7 дней)
+	expiring, err := app.models.BonusEntries.GetExpiringEntries(userId, 7)
+	if err != nil {
+		app.serverErrorResponse(w, r, err)
+		return
+	}
+
+	response := balanceResponse{
+		UserId:   userId,
+		Balance:  balance,
+		Expiring: expiring,
+	}
+
+	if err = app.writeJSON(w, http.StatusOK, response, nil); err != nil {
 		app.serverErrorResponse(w, r, err)
 	}
 }
