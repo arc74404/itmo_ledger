@@ -6,15 +6,18 @@ import (
 )
 
 var (
-	ErrRecordNotFound = errors.New("record not found")
+	ErrRecordNotFound    = errors.New("record not found")
+	ErrInsufficientFunds = errors.New("insufficient funds")
 )
 
 type Models struct {
-	Balances BalanceModel
+	Balances     BalanceModel
+	BonusEntries BonusEntryModel
 }
 
 func NewModels(db *sql.DB) Models {
 	return Models{
-		Balances: BalanceModel{DB: db},
+		Balances:     BalanceModel{DB: db},
+		BonusEntries: BonusEntryModel{DB: db},
 	}
 }

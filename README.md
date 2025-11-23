@@ -42,17 +42,33 @@ go run ./cmd/api
 
 ## Примеры запросов
 
-Добавление/создание баланса
+Добавление/создание баланса (начисление баллов)
 ```bash
-curl -X POST localhost:8080/v1/transactions -d '{"user_id": "653F535D-10BA-4186-A05B-74493354F13B", "amount": 100, "type": "deposit"}' 
+curl -X POST localhost:8080/v1/transactions \
+  -H "Content-Type: application/json" \
+  -d '{"user_id": "653F535D-10BA-4186-A05B-74493354F13B", "amount": 100, "type": "deposit"}'
+```
+
+Начисление баллов с указанием срока жизни (в днях)
+```bash
+curl -X POST localhost:8080/v1/transactions \
+  -H "Content-Type: application/json" \
+  -d '{"user_id": "653F535D-10BA-4186-A05B-74493354F13B", "amount": 100, "type": "deposit", "lifetime_days": 60}'
 ```
 
 Списание средств
 ```bash
-curl -X POST localhost:8080/v1/transactions -d '{"user_id": "653F535D-10BA-4186-A05B-74493354F13B", "amount": 200, "type": "withdrawal"}' 
+curl -X POST localhost:8080/v1/transactions \
+  -H "Content-Type: application/json" \
+  -d '{"user_id": "653F535D-10BA-4186-A05B-74493354F13B", "amount": 50, "type": "withdrawal"}'
 ```
 
-Получение баланса
+Получение баланса и информации о сгорании баллов
 ```bash
-curl -X GET localhost:8080/v1/users/653F535D-10BA-4186-A05B-74493354F13B/balance 
+curl -X GET localhost:8080/v1/users/653F535D-10BA-4186-A05B-74493354F13B/balance
 ```
+
+Ответ содержит:
+- `user_id` - идентификатор пользователя
+- `balance` - текущий баланс активных баллов
+- `expiring` - объект с датами и количеством баллов, которые сгорят в ближайшие 7 дней
