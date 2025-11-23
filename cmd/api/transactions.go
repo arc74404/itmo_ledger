@@ -2,8 +2,9 @@ package main
 
 import (
 	"errors"
-	"github.com/google/uuid"
 	"net/http"
+
+	"github.com/google/uuid"
 	"simple-ledger.itmo.ru/internal/data"
 	"simple-ledger.itmo.ru/internal/validator"
 )
@@ -81,7 +82,6 @@ func (app *application) updateBalance(w http.ResponseWriter, r *http.Request, ba
 	if err != nil {
 		app.serverErrorResponse(w, r, err)
 	}
-	return
 }
 
 func (app *application) showUserBalanceHandler(w http.ResponseWriter, r *http.Request) {

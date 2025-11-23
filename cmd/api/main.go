@@ -8,8 +8,9 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"simple-ledger.itmo.ru/internal/data"
 	"time"
+
+	"simple-ledger.itmo.ru/internal/data"
 
 	_ "github.com/lib/pq"
 )
@@ -63,10 +64,6 @@ func main() {
 
 func openDB(cfg config) (*sql.DB, error) {
 	db, err := sql.Open("postgres", cfg.db.dsn)
-	if err != nil {
-		return nil, err
-	}
-
 	if err != nil {
 		return nil, err
 	}
