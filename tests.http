@@ -1,0 +1,26 @@
+@host = http://localhost:8080
+@user_id = 653F535D-10BA-4186-A05B-74493354F13B
+
+POST {{host}}/v1/transactions
+Content-Type: application/json
+
+{
+  "user_id": "{{user_id}}",
+  "amount": 100,
+  "type": "deposit"
+}
+
+###
+
+POST {{host}}/v1/transactions
+Content-Type: application/json
+
+{
+  "user_id": "{{user_id}}",
+  "amount": 200,
+  "type": "withdrawal"
+}
+
+###
+
+GET {{host}}/v1/users/{{user_id}}/balance 
