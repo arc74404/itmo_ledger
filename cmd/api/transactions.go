@@ -17,13 +17,13 @@ type transactionIn struct {
 	UserId       string `json:"user_id"`
 	Amount       int    `json:"amount"`
 	Type         string `json:"type"`
-	LifetimeDays *int   `json:"lifetime_days,omitempty"` // Опционально, по умолчанию 30 дней
+	LifetimeDays *int   `json:"lifetime_days,omitempty"`
 }
 
 type balanceResponse struct {
 	UserId   uuid.UUID      `json:"user_id"`
 	Balance  int            `json:"balance"`
-	Expiring map[string]int `json:"expiring"` // Баллы, которые сгорят по датам
+	Expiring map[string]int `json:"expiring"`
 }
 
 func (app *application) createTransactionHandler(w http.ResponseWriter, r *http.Request) {
@@ -51,7 +51,6 @@ func (app *application) createTransactionHandler(w http.ResponseWriter, r *http.
 		return
 	}
 
-	// Устанавливаем дефолтное значение lifetime_days = 30, если не указано
 	lifetimeDays := 30
 	if trxIn.LifetimeDays != nil {
 		lifetimeDays = *trxIn.LifetimeDays
@@ -107,23 +106,23 @@ func (app *application) createTransactionHandler(w http.ResponseWriter, r *http.
 }
 
 func (app *application) handleDeposit(tx *sql.Tx, userId uuid.UUID, amount int, lifetimeDays int) error {
-	// Создаем новую запись о начислении баллов
+
 	now := time.Now()
 	entry := &data.BonusEntry{
 		Id:           uuid.New(),
 		UserId:       userId,
 		Amount:       amount,
 		CreatedAt:    now,
-		ExpiresAt:    now.AddDate(0, 0, lifetimeDays),
 		LifetimeDays: lifetimeDays,
 		Status:       data.BonusEntryStatusActive,
 	}
 
-	// Используем транзакцию для вставки
+	expiresAt := entry.ExpiresAt()
+
 	query := `
 		INSERT INTO bonus_entries (id, user_id, amount, created_at, expires_at, lifetime_days, status)
 		VALUES ($1, $2, $3, $4, $5, $6, $7)
-		RETURNING id, created_at, expires_at`
+		RETURNING id, created_at`
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
@@ -133,10 +132,10 @@ func (app *application) handleDeposit(tx *sql.Tx, userId uuid.UUID, amount int, 
 		entry.UserId,
 		entry.Amount,
 		entry.CreatedAt,
-		entry.ExpiresAt,
+		expiresAt,
 		entry.LifetimeDays,
 		entry.Status,
-	).Scan(&entry.Id, &entry.CreatedAt, &entry.ExpiresAt)
+	).Scan(&entry.Id, &entry.CreatedAt)
 
 	return err
 }

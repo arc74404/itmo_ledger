@@ -20,6 +20,11 @@ type config struct {
 	db   struct {
 		dsn string
 	}
+	timeouts struct {
+		idle  time.Duration
+		read  time.Duration
+		write time.Duration
+	}
 }
 
 type application struct {
@@ -34,6 +39,9 @@ func main() {
 
 	flag.IntVar(&cfg.port, "port", 8080, "API server port")
 	flag.StringVar(&cfg.db.dsn, "db-dsn", os.Getenv("DB_DSN"), "PostgreSQL DSN")
+	flag.DurationVar(&cfg.timeouts.idle, "idle-timeout", time.Minute, "HTTP idle timeout")
+	flag.DurationVar(&cfg.timeouts.read, "read-timeout", 10*time.Second, "HTTP read timeout")
+	flag.DurationVar(&cfg.timeouts.write, "write-timeout", 30*time.Second, "HTTP write timeout")
 	flag.Parse()
 
 	logger := log.New(os.Stdout, "", log.Ldate|log.Ltime)
@@ -54,9 +62,9 @@ func main() {
 	srv := &http.Server{
 		Addr:         fmt.Sprintf(":%d", cfg.port),
 		Handler:      app.routes(),
-		IdleTimeout:  time.Minute,
-		ReadTimeout:  10 * time.Second,
-		WriteTimeout: 30 * time.Second,
+		IdleTimeout:  cfg.timeouts.idle,
+		ReadTimeout:  cfg.timeouts.read,
+		WriteTimeout: cfg.timeouts.write,
 	}
 
 	logger.Printf("starting server on %s", srv.Addr)
@@ -65,7 +73,7 @@ func main() {
 }
 
 func openDB(cfg config) (*sql.DB, error) {
-	// Добавьте отладочный вывод для проверки DSN
+
 	fmt.Printf("Using DSN: %s\n", cfg.db.dsn)
 
 	if cfg.db.dsn == "" {
