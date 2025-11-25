@@ -4,11 +4,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/google/uuid"
-	"github.com/julienschmidt/httprouter"
 	"io"
 	"net/http"
 	"strings"
+
+	"github.com/google/uuid"
+	"github.com/julienschmidt/httprouter"
 )
 
 func (app *application) readIDParam(r *http.Request) (uuid.UUID, error) {
@@ -44,6 +45,72 @@ func (app *application) writeJSON(w http.ResponseWriter, status int, data any, h
 	return nil
 }
 
+// errors handling with map
+
+type jsonDecodeHandler func(error) (bool, error)
+
+var jsonDecodeHandlers = []jsonDecodeHandler{
+	func(err error) (bool, error) {
+		var syntaxError *json.SyntaxError
+		if errors.As(err, &syntaxError) {
+			return true, fmt.Errorf("body contains badly-formed JSON (at character %d)", syntaxError.Offset)
+		}
+		return false, nil
+	},
+	func(err error) (bool, error) {
+		if errors.Is(err, io.ErrUnexpectedEOF) {
+			return true, errors.New("body contains badly-formed JSON")
+		}
+		return false, nil
+	},
+	func(err error) (bool, error) {
+		var unmarshalTypeError *json.UnmarshalTypeError
+		if errors.As(err, &unmarshalTypeError) {
+			if unmarshalTypeError.Field != "" {
+				return true, fmt.Errorf("body contains incorrect JSON type for field %q", unmarshalTypeError.Field)
+			}
+			return true, fmt.Errorf("body contains incorrect JSON type (at character %d)", unmarshalTypeError.Offset)
+		}
+		return false, nil
+	},
+	func(err error) (bool, error) {
+		if errors.Is(err, io.EOF) {
+			return true, errors.New("body must not be empty")
+		}
+		return false, nil
+	},
+	func(err error) (bool, error) {
+		if strings.HasPrefix(err.Error(), "json: unknown field ") {
+			fieldName := strings.TrimPrefix(err.Error(), "json: unknown field ")
+			return true, fmt.Errorf("body contains unknown key %s", fieldName)
+		}
+		return false, nil
+	},
+	func(err error) (bool, error) {
+		var maxBytesError *http.MaxBytesError
+		if errors.As(err, &maxBytesError) {
+			return true, fmt.Errorf("body must not be larger than %d bytes", maxBytesError.Limit)
+		}
+		return false, nil
+	},
+	func(err error) (bool, error) {
+		var invalidUnmarshalError *json.InvalidUnmarshalError
+		if errors.As(err, &invalidUnmarshalError) {
+			panic(err)
+		}
+		return false, nil
+	},
+}
+
+func handleJSONDecodeError(err error) error {
+	for _, handler := range jsonDecodeHandlers {
+		if matched, handledErr := handler(err); matched {
+			return handledErr
+		}
+	}
+	return err
+}
+
 func (app *application) readJSON(w http.ResponseWriter, r *http.Request, dst any) error {
 	maxBytes := 10 * 1024 // 10 Kb
 	r.Body = http.MaxBytesReader(w, r.Body, int64(maxBytes))
@@ -52,33 +119,7 @@ func (app *application) readJSON(w http.ResponseWriter, r *http.Request, dst any
 	dec.DisallowUnknownFields()
 
 	if err := dec.Decode(dst); err != nil {
-		var syntaxError *json.SyntaxError
-		var unmarshalTypeError *json.UnmarshalTypeError
-		var invalidUnmarshalError *json.InvalidUnmarshalError
-		var maxBytesError *http.MaxBytesError
-
-		switch {
-		case errors.As(err, &syntaxError):
-			return fmt.Errorf("body contains badly-formed JSON (at character %d)", syntaxError.Offset)
-		case errors.Is(err, io.ErrUnexpectedEOF):
-			return errors.New("body contains badly-formed JSON")
-		case errors.As(err, &unmarshalTypeError):
-			if unmarshalTypeError.Field != "" {
-				return fmt.Errorf("body contains incorrect JSON type for field %q", unmarshalTypeError.Field)
-			}
-			return fmt.Errorf("body contains incorrect JSON type (at character %d)", unmarshalTypeError.Offset)
-		case errors.Is(err, io.EOF):
-			return errors.New("body must not be empty")
-		case strings.HasPrefix(err.Error(), "json: unknown field "):
-			fieldName := strings.TrimPrefix(err.Error(), "json: unknown field ")
-			return fmt.Errorf("body contains unknown key %s", fieldName)
-		case errors.As(err, &maxBytesError):
-			return fmt.Errorf("body must not be larger than %d bytes", maxBytesError.Limit)
-		case errors.As(err, &invalidUnmarshalError):
-			panic(err)
-		default:
-			return err
-		}
+		return handleJSONDecodeError(err)
 	}
 
 	if err := dec.Decode(&struct{}{}); err != io.EOF {

@@ -4,13 +4,13 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"github.com/google/uuid"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 type Balance struct {
 	Id        uuid.UUID `json:"id"`
-	Amount    int       `json:"amount"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
@@ -20,15 +20,15 @@ type BalanceModel struct {
 
 func (m BalanceModel) Insert(balance *Balance) error {
 	query := `
-		INSERT INTO balances (id, amount)
-		VALUES ($1, $2)
-		RETURNING id, updated_at, amount`
-	args := []any{balance.Id, balance.Amount}
+		INSERT INTO balances (id)
+		VALUES ($1)
+		RETURNING id, updated_at`
+	args := []any{balance.Id}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	return m.DB.QueryRowContext(ctx, query, args...).Scan(&balance.Id, &balance.UpdatedAt, &balance.Amount)
+	return m.DB.QueryRowContext(ctx, query, args...).Scan(&balance.Id, &balance.UpdatedAt)
 }
 
 func (m BalanceModel) Get(id uuid.UUID) (*Balance, error) {
@@ -38,13 +38,12 @@ func (m BalanceModel) Get(id uuid.UUID) (*Balance, error) {
 	defer cancel()
 
 	query := `
-		SELECT id, updated_at, amount
+		SELECT id, updated_at
 		FROM balances
 		WHERE id = $1`
 	err := m.DB.QueryRowContext(ctx, query, id).Scan(
 		&balance.Id,
 		&balance.UpdatedAt,
-		&balance.Amount,
 	)
 	if err != nil {
 		switch {
@@ -61,12 +60,11 @@ func (m BalanceModel) Get(id uuid.UUID) (*Balance, error) {
 func (m BalanceModel) Update(balance *Balance) error {
 	query := `
 		UPDATE balances
-		SET amount = $2, updated_at = $3
+		SET updated_at = $2
 		WHERE id = $1
 		RETURNING updated_at`
 	args := []any{
 		balance.Id,
-		balance.Amount,
 		time.Now(),
 	}
 
@@ -93,8 +91,7 @@ func (m BalanceModel) GetOrCreate(id uuid.UUID) (*Balance, error) {
 
 	// Создаем новый баланс
 	newBalance := &Balance{
-		Id:     id,
-		Amount: 0,
+		Id: id,
 	}
 	err = m.Insert(newBalance)
 	if err != nil {

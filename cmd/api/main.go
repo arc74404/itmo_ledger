@@ -122,6 +122,11 @@ type config struct {
 		read  time.Duration
 		write time.Duration
 	}
+	timeouts struct {
+		idle  time.Duration
+		read  time.Duration
+		write time.Duration
+	}
 }
 
 type application struct {
@@ -159,6 +164,9 @@ func main() {
 	srv := &http.Server{
 		Addr:         fmt.Sprintf(":%d", cfg.port),
 		Handler:      app.routes(),
+		IdleTimeout:  cfg.timeouts.idle,
+		ReadTimeout:  cfg.timeouts.read,
+		WriteTimeout: cfg.timeouts.write,
 		IdleTimeout:  cfg.timeouts.idle,
 		ReadTimeout:  cfg.timeouts.read,
 		WriteTimeout: cfg.timeouts.write,
