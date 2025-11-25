@@ -6,23 +6,24 @@ import (
 	"errors"
 	"net/http"
 
+	"time"
+
 	"github.com/google/uuid"
 	"simple-ledger.itmo.ru/internal/data"
 	"simple-ledger.itmo.ru/internal/validator"
-	"time"
 )
 
 type transactionIn struct {
-	UserId      string `json:"user_id"`
-	Amount      int    `json:"amount"`
-	Type        string `json:"type"`
-	LifetimeDays *int  `json:"lifetime_days,omitempty"` // Опционально, по умолчанию 30 дней
+	UserId       string `json:"user_id"`
+	Amount       int    `json:"amount"`
+	Type         string `json:"type"`
+	LifetimeDays *int   `json:"lifetime_days,omitempty"` // Опционально, по умолчанию 30 дней
 }
 
 type balanceResponse struct {
-	UserId      uuid.UUID              `json:"user_id"`
-	Balance     int                    `json:"balance"`
-	Expiring    map[string]int         `json:"expiring"` // Баллы, которые сгорят по датам
+	UserId   uuid.UUID      `json:"user_id"`
+	Balance  int            `json:"balance"`
+	Expiring map[string]int `json:"expiring"` // Баллы, которые сгорят по датам
 }
 
 func (app *application) createTransactionHandler(w http.ResponseWriter, r *http.Request) {
@@ -39,7 +40,7 @@ func (app *application) createTransactionHandler(w http.ResponseWriter, r *http.
 	v.Check(err == nil, "user_id", "must be uuid")
 	v.Check(trxIn.Amount > 0, "amount", "must be positive")
 	v.Check(validator.IsPermitted(trxIn.Type, "deposit", "withdrawal"), "type", "must be deposit or withdrawal")
-	
+
 	// Проверка lifetime_days, если указан
 	if trxIn.LifetimeDays != nil {
 		v.Check(*trxIn.LifetimeDays > 0, "lifetime_days", "must be positive")
@@ -63,13 +64,7 @@ func (app *application) createTransactionHandler(w http.ResponseWriter, r *http.
 		return
 	}
 	defer tx.Rollback()
-
-	// Убеждаемся, что пользователь существует в таблице balances
-	_, err = app.models.Balances.GetOrCreate(userId)
-	if err != nil {
-		app.serverErrorResponse(w, r, err)
-		return
-	}
+	// Skip balance table check - bonus entries system doesn't require user pre-registration
 
 	if trxIn.Type == "deposit" {
 		err = app.handleDeposit(tx, userId, trxIn.Amount, lifetimeDays)
@@ -115,13 +110,13 @@ func (app *application) handleDeposit(tx *sql.Tx, userId uuid.UUID, amount int, 
 	// Создаем новую запись о начислении баллов
 	now := time.Now()
 	entry := &data.BonusEntry{
-		Id:          uuid.New(),
-		UserId:      userId,
-		Amount:      amount,
-		CreatedAt:   now,
-		ExpiresAt:   now.AddDate(0, 0, lifetimeDays),
+		Id:           uuid.New(),
+		UserId:       userId,
+		Amount:       amount,
+		CreatedAt:    now,
+		ExpiresAt:    now.AddDate(0, 0, lifetimeDays),
 		LifetimeDays: lifetimeDays,
-		Status:      data.BonusEntryStatusActive,
+		Status:       data.BonusEntryStatusActive,
 	}
 
 	// Используем транзакцию для вставки
@@ -129,7 +124,7 @@ func (app *application) handleDeposit(tx *sql.Tx, userId uuid.UUID, amount int, 
 		INSERT INTO bonus_entries (id, user_id, amount, created_at, expires_at, lifetime_days, status)
 		VALUES ($1, $2, $3, $4, $5, $6, $7)
 		RETURNING id, created_at, expires_at`
-	
+
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
@@ -142,7 +137,7 @@ func (app *application) handleDeposit(tx *sql.Tx, userId uuid.UUID, amount int, 
 		entry.LifetimeDays,
 		entry.Status,
 	).Scan(&entry.Id, &entry.CreatedAt, &entry.ExpiresAt)
-	
+
 	return err
 }
 
@@ -159,17 +154,7 @@ func (app *application) showUserBalanceHandler(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	// Проверяем, существует ли пользователь
-	_, err = app.models.Balances.Get(userId)
-	if err != nil {
-		switch {
-		case errors.Is(err, data.ErrRecordNotFound):
-			app.notFoundResponse(w, r)
-		default:
-			app.serverErrorResponse(w, r, err)
-		}
-		return
-	}
+	// Skip balance table check - bonus entries system allows checking balance for any user
 
 	// Получаем общий баланс
 	balance, err := app.models.BonusEntries.GetTotalBalance(userId)
