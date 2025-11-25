@@ -21,10 +21,14 @@ type BonusEntry struct {
 	UserId       uuid.UUID        `json:"user_id"`
 	Amount       int              `json:"amount"`
 	CreatedAt    time.Time        `json:"created_at"`
-	ExpiresAt    time.Time        `json:"expires_at"`
 	LifetimeDays int              `json:"lifetime_days"`
 	Status       BonusEntryStatus `json:"status"`
 	SpentAt      *time.Time       `json:"spent_at,omitempty"`
+}
+
+// ExpiresAt вычисляет дату истечения на основе CreatedAt и LifetimeDays
+func (e *BonusEntry) ExpiresAt() time.Time {
+	return e.CreatedAt.AddDate(0, 0, e.LifetimeDays)
 }
 
 type BonusEntryModel struct {
@@ -33,17 +37,18 @@ type BonusEntryModel struct {
 
 // Insert создает новую запись о начислении баллов
 func (m BonusEntryModel) Insert(entry *BonusEntry) error {
+	expiresAt := entry.ExpiresAt()
 	query := `
 		INSERT INTO bonus_entries (id, user_id, amount, created_at, expires_at, lifetime_days, status)
 		VALUES ($1, $2, $3, $4, $5, $6, $7)
-		RETURNING id, created_at, expires_at`
+		RETURNING id, created_at`
 
 	args := []any{
 		entry.Id,
 		entry.UserId,
 		entry.Amount,
 		entry.CreatedAt,
-		entry.ExpiresAt,
+		expiresAt,
 		entry.LifetimeDays,
 		entry.Status,
 	}
@@ -54,7 +59,6 @@ func (m BonusEntryModel) Insert(entry *BonusEntry) error {
 	err := m.DB.QueryRowContext(ctx, query, args...).Scan(
 		&entry.Id,
 		&entry.CreatedAt,
-		&entry.ExpiresAt,
 	)
 	if err != nil {
 		return err
@@ -66,7 +70,7 @@ func (m BonusEntryModel) Insert(entry *BonusEntry) error {
 // GetActiveEntries возвращает все активные записи баллов пользователя, отсортированные по дате создания (FIFO)
 func (m BonusEntryModel) GetActiveEntries(userId uuid.UUID) ([]*BonusEntry, error) {
 	query := `
-		SELECT id, user_id, amount, created_at, expires_at, lifetime_days, status, spent_at
+		SELECT id, user_id, amount, created_at, lifetime_days, status, spent_at
 		FROM bonus_entries
 		WHERE user_id = $1 
 			AND status = 'active' 
@@ -90,7 +94,6 @@ func (m BonusEntryModel) GetActiveEntries(userId uuid.UUID) ([]*BonusEntry, erro
 			&entry.UserId,
 			&entry.Amount,
 			&entry.CreatedAt,
-			&entry.ExpiresAt,
 			&entry.LifetimeDays,
 			&entry.Status,
 			&entry.SpentAt,
@@ -111,7 +114,7 @@ func (m BonusEntryModel) GetActiveEntries(userId uuid.UUID) ([]*BonusEntry, erro
 // GetActiveEntriesForUpdate возвращает активные записи с блокировкой для транзакций (SELECT FOR UPDATE)
 func (m BonusEntryModel) GetActiveEntriesForUpdate(tx *sql.Tx, userId uuid.UUID) ([]*BonusEntry, error) {
 	query := `
-		SELECT id, user_id, amount, created_at, expires_at, lifetime_days, status, spent_at
+		SELECT id, user_id, amount, created_at, lifetime_days, status, spent_at
 		FROM bonus_entries
 		WHERE user_id = $1 
 			AND status = 'active' 
@@ -136,7 +139,6 @@ func (m BonusEntryModel) GetActiveEntriesForUpdate(tx *sql.Tx, userId uuid.UUID)
 			&entry.UserId,
 			&entry.Amount,
 			&entry.CreatedAt,
-			&entry.ExpiresAt,
 			&entry.LifetimeDays,
 			&entry.Status,
 			&entry.SpentAt,
@@ -192,7 +194,6 @@ func (m BonusEntryModel) SpendEntries(tx *sql.Tx, userId uuid.UUID, amount int) 
 				UserId:       entry.UserId,
 				Amount:       entry.Amount - spentAmount,
 				CreatedAt:    entry.CreatedAt,
-				ExpiresAt:    entry.ExpiresAt,
 				LifetimeDays: entry.LifetimeDays,
 				Status:       BonusEntryStatusActive,
 			}
@@ -207,7 +208,7 @@ func (m BonusEntryModel) SpendEntries(tx *sql.Tx, userId uuid.UUID, amount int) 
 				remainingEntry.UserId,
 				remainingEntry.Amount,
 				remainingEntry.CreatedAt,
-				remainingEntry.ExpiresAt,
+				remainingEntry.ExpiresAt(),
 				remainingEntry.LifetimeDays,
 				remainingEntry.Status,
 			)
