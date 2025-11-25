@@ -86,7 +86,8 @@ func (app *application) createTransactionHandler(w http.ResponseWriter, r *http.
 
 	if err != nil {
 		switch {
-		case errors.Is(err, data.ErrInsufficientFunds), errors.Is(err, errNoBalanceToMultiply), errors.Is(err, errZeroBonusAfterMultiply):
+		case errors.Is(err, data.ErrInsufficientFunds), errors.Is(err, errNoBalanceToMultiply),
+			errors.Is(err, errZeroBonusAfterMultiply), errors.Is(err, errMultiplyPercentTooLarge):
 			app.badRequestResponse(w, r, err)
 		default:
 			app.serverErrorResponse(w, r, err)
