@@ -26,7 +26,7 @@ type BonusEntry struct {
 	SpentAt      *time.Time       `json:"spent_at,omitempty"`
 }
 
-// ExpiresAt вычисляет дату истечения на основе CreatedAt и LifetimeDays
+// ExpiresAt calculates the expiration date based on CreatedAt and LifetimeDays
 func (e *BonusEntry) ExpiresAt() time.Time {
 	return e.CreatedAt.AddDate(0, 0, e.LifetimeDays)
 }
@@ -35,7 +35,7 @@ type BonusEntryModel struct {
 	DB *sql.DB
 }
 
-// Insert создает новую запись о начислении баллов
+// Insert creates a new entry for the bonus entry
 func (m BonusEntryModel) Insert(entry *BonusEntry) error {
 	expiresAt := entry.ExpiresAt()
 	query := `
@@ -111,7 +111,7 @@ func (m BonusEntryModel) GetActiveEntries(userId uuid.UUID) ([]*BonusEntry, erro
 	return entries, nil
 }
 
-// GetActiveEntriesForUpdate возвращает активные записи с блокировкой для транзакций (SELECT FOR UPDATE)
+// GetActiveEntriesForUpdate returns active entries with lock for transactions (SELECT FOR UPDATE)
 func (m BonusEntryModel) GetActiveEntriesForUpdate(tx *sql.Tx, userId uuid.UUID) ([]*BonusEntry, error) {
 	query := `
 		SELECT id, user_id, amount, created_at, lifetime_days, status, spent_at
@@ -156,16 +156,16 @@ func (m BonusEntryModel) GetActiveEntriesForUpdate(tx *sql.Tx, userId uuid.UUID)
 	return entries, nil
 }
 
-// SpendEntries списывает баллы по принципу FIFO в рамках транзакции
-// Возвращает список записей, которые были использованы для списания
+// SpendEntries spends entries by FIFO principle within a transaction
+// Returns a list of entries that were used for spending
 func (m BonusEntryModel) SpendEntries(tx *sql.Tx, userId uuid.UUID, amount int) ([]*BonusEntry, error) {
-	// Получаем активные записи с блокировкой
+	// Get active entries with lock for transactions
 	entries, err := m.GetActiveEntriesForUpdate(tx, userId)
 	if err != nil {
 		return nil, err
 	}
 
-	// Рассчитываем доступный баланс
+	// Calculate available balance
 	availableBalance := 0
 	for _, entry := range entries {
 		availableBalance += entry.Amount
@@ -175,7 +175,7 @@ func (m BonusEntryModel) SpendEntries(tx *sql.Tx, userId uuid.UUID, amount int) 
 		return nil, ErrInsufficientFunds
 	}
 
-	// Списываем по принципу FIFO
+	// Spend by FIFO principle
 	remainingAmount := amount
 	var spentEntries []*BonusEntry
 	now := time.Now()
@@ -188,7 +188,7 @@ func (m BonusEntryModel) SpendEntries(tx *sql.Tx, userId uuid.UUID, amount int) 
 		spentAmount := entry.Amount
 		if remainingAmount < entry.Amount {
 			spentAmount = remainingAmount
-			// Частичное списание - создаем новую запись с остатком
+			// Partial spending - create a new entry with the remainder
 			remainingEntry := &BonusEntry{
 				Id:           uuid.New(),
 				UserId:       entry.UserId,
@@ -218,7 +218,7 @@ func (m BonusEntryModel) SpendEntries(tx *sql.Tx, userId uuid.UUID, amount int) 
 			}
 		}
 
-		// Обновляем статус записи на 'spent'
+		// Update status of the entry to 'spent'
 		updateQuery := `
 			UPDATE bonus_entries
 			SET status = 'spent', spent_at = $1, amount = $2
@@ -242,7 +242,7 @@ func (m BonusEntryModel) SpendEntries(tx *sql.Tx, userId uuid.UUID, amount int) 
 	return spentEntries, nil
 }
 
-// GetTotalBalance вычисляет общий баланс активных баллов пользователя
+// GetTotalBalance calculates the total balance of active bonus entries for a user
 func (m BonusEntryModel) GetTotalBalance(userId uuid.UUID) (int, error) {
 	query := `
 		SELECT COALESCE(SUM(amount), 0)
@@ -263,8 +263,8 @@ func (m BonusEntryModel) GetTotalBalance(userId uuid.UUID) (int, error) {
 	return balance, nil
 }
 
-// GetExpiringEntries возвращает информацию о баллах, которые сгорят в ближайшие дни
-// days - количество дней для анализа
+// GetExpiringEntries returns information about entries that will expire in the next days
+// days - number of days for analysis
 func (m BonusEntryModel) GetExpiringEntries(userId uuid.UUID, days int) (map[string]int, error) {
 	query := `
 		SELECT 
@@ -305,7 +305,7 @@ func (m BonusEntryModel) GetExpiringEntries(userId uuid.UUID, days int) (map[str
 	return result, nil
 }
 
-// UpdateExpiredEntries обновляет статус просроченных записей на 'expired'
+// UpdateExpiredEntries updates the status of expired entries to 'expired'
 func (m BonusEntryModel) UpdateExpiredEntries() (int64, error) {
 	query := `
 		UPDATE bonus_entries

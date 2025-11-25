@@ -20,6 +20,12 @@ type transactionIn struct {
 	LifetimeDays *int   `json:"lifetime_days,omitempty"`
 }
 
+var (
+	errNoBalanceToMultiply     = errors.New("no active balance to multiply")
+	errZeroBonusAfterMultiply  = errors.New("multiply percent too small for current balance")
+	errMultiplyPercentTooLarge = errors.New("multiply percent too large")
+)
+
 type balanceResponse struct {
 	UserId   uuid.UUID      `json:"user_id"`
 	Balance  int            `json:"balance"`
@@ -39,7 +45,7 @@ func (app *application) createTransactionHandler(w http.ResponseWriter, r *http.
 	v := validator.New()
 	v.Check(err == nil, "user_id", "must be uuid")
 	v.Check(trxIn.Amount > 0, "amount", "must be positive")
-	v.Check(validator.IsPermitted(trxIn.Type, "deposit", "withdrawal"), "type", "must be deposit or withdrawal")
+	v.Check(validator.IsPermitted(trxIn.Type, "deposit", "withdrawal", "multiply_percent"), "type", "must be deposit, withdrawal or multiply_percent")
 
 	// Проверка lifetime_days, если указан
 	if trxIn.LifetimeDays != nil {
@@ -65,37 +71,50 @@ func (app *application) createTransactionHandler(w http.ResponseWriter, r *http.
 	defer tx.Rollback()
 	// Skip balance table check - bonus entries system doesn't require user pre-registration
 
-	if trxIn.Type == "deposit" {
+	var processedAmount int
+
+	switch trxIn.Type {
+	case "deposit":
 		err = app.handleDeposit(tx, userId, trxIn.Amount, lifetimeDays)
-	} else {
+		processedAmount = trxIn.Amount
+	case "withdrawal":
 		err = app.handleWithdrawal(tx, userId, trxIn.Amount)
+		processedAmount = trxIn.Amount
+	case "multiply":
+		processedAmount, err = app.handleMultiply(tx, userId, trxIn.Amount, lifetimeDays)
 	}
 
 	if err != nil {
-		if errors.Is(err, data.ErrInsufficientFunds) {
+		switch {
+		case errors.Is(err, data.ErrInsufficientFunds), errors.Is(err, errNoBalanceToMultiply), errors.Is(err, errZeroBonusAfterMultiply):
 			app.badRequestResponse(w, r, err)
-			return
+		default:
+			app.serverErrorResponse(w, r, err)
 		}
-		app.serverErrorResponse(w, r, err)
 		return
 	}
 
-	// Коммитим транзакцию
+	//commit transaction
 	if err = tx.Commit(); err != nil {
 		app.serverErrorResponse(w, r, err)
 		return
 	}
 
-	// Получаем обновленный баланс для ответа
+	// get updated balance for response
 	balance, err := app.models.BonusEntries.GetTotalBalance(userId)
 	if err != nil {
 		app.serverErrorResponse(w, r, err)
 		return
 	}
 
+	amountForResponse := trxIn.Amount
+	if processedAmount > 0 {
+		amountForResponse = processedAmount
+	}
+
 	response := map[string]interface{}{
 		"user_id": userId,
-		"amount":  trxIn.Amount,
+		"amount":  amountForResponse,
 		"type":    trxIn.Type,
 		"balance": balance,
 	}
@@ -141,9 +160,42 @@ func (app *application) handleDeposit(tx *sql.Tx, userId uuid.UUID, amount int, 
 }
 
 func (app *application) handleWithdrawal(tx *sql.Tx, userId uuid.UUID, amount int) error {
-	// Используем метод модели для списания с блокировками
 	_, err := app.models.BonusEntries.SpendEntries(tx, userId, amount)
 	return err
+}
+
+func (app *application) handleMultiply(tx *sql.Tx, userId uuid.UUID, percent int, lifetimeDays int) (int, error) {
+	if percent <= 0 {
+		return 0, errZeroBonusAfterMultiply
+	}
+	if percent > 200 {
+		return 0, errMultiplyPercentTooLarge
+	}
+
+	entries, err := app.models.BonusEntries.GetActiveEntriesForUpdate(tx, userId)
+	if err != nil {
+		return 0, err
+	}
+
+	total := 0
+	for _, entry := range entries {
+		total += entry.Amount
+	}
+
+	if total <= 0 {
+		return 0, errNoBalanceToMultiply
+	}
+
+	bonus := int((int64(total) * int64(percent)) / 100)
+	if bonus <= 0 {
+		return 0, errZeroBonusAfterMultiply
+	}
+
+	if err := app.handleDeposit(tx, userId, bonus, lifetimeDays); err != nil {
+		return 0, err
+	}
+
+	return bonus, nil
 }
 
 func (app *application) showUserBalanceHandler(w http.ResponseWriter, r *http.Request) {
@@ -155,14 +207,14 @@ func (app *application) showUserBalanceHandler(w http.ResponseWriter, r *http.Re
 
 	// Skip balance table check - bonus entries system allows checking balance for any user
 
-	// Получаем общий баланс
+	// ПTake total balance
 	balance, err := app.models.BonusEntries.GetTotalBalance(userId)
 	if err != nil {
 		app.serverErrorResponse(w, r, err)
 		return
 	}
 
-	// Получаем информацию о сгорании баллов (на ближайшие 7 дней)
+	// Get expiring entries (next 7 days)
 	expiring, err := app.models.BonusEntries.GetExpiringEntries(userId, 7)
 	if err != nil {
 		app.serverErrorResponse(w, r, err)
